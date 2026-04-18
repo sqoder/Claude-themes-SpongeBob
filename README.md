@@ -73,6 +73,7 @@ claude-theme-patch set bubble-bass
 
 - This tool modifies the official Claude Code install in place.
 - It is intentionally coupled to Claude Code's current bundled `cli.js` structure.
+- Version-specific patch matchers live under `src/adapters/`; add a new adapter instead of growing `src/cli.ts`.
 - This release is validated against Claude Code `2.1.112`.
 - When Claude Code updates, you may need to rerun the patcher or publish a new patcher build.
 - Use `--target <path>` to patch a copied `cli.js` during testing instead of touching the real install.

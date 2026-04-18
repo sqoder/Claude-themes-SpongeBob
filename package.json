@@ -12,9 +12,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
-    "smoke": "npm run build && node ./scripts/smoke-test.mjs",
+    "smoke": "npm run build && node ./scripts/adapter-regression.mjs && node ./scripts/smoke-test.mjs",
     "verify:release": "npm run smoke && npm pack --dry-run",
     "prepack": "npm run build"
   },
