@@ -148,6 +148,12 @@ npm run verify:release
 
 This repository now includes a GitHub Actions publish workflow at `.github/workflows/publish.yml`.
 
+Release docs:
+
+- Current release body: `docs/releases/v0.2.1.md`
+- Next automated release checklist: `docs/releases/0.2.2-checklist.md`
+- Project changelog: `CHANGELOG.md`
+
 One-time npm setup:
 
 1. Create or claim the `claude-code-theme-patcher` package on npm.
