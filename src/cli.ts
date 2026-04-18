@@ -3,11 +3,13 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -23,6 +25,7 @@ import {
   getValidatedVersionSummary,
   isValidatedClaudeCodeVersion,
   resolveClaudeCodeAdapter,
+  VALIDATED_CLAUDE_CODE_VERSIONS,
 } from './claudeCodeAdapter.js'
 import {
   buildCustomThemePayload,
@@ -70,6 +73,10 @@ type PatchMetadata = {
   themeNames?: string[]
   customThemeCount?: number
   themePayloadSha256?: string
+  strategy?: 'direct-js' | 'managed-runtime-launcher'
+  managedTargetPath?: string
+  managedRuntimeDir?: string
+  managedClaudeVersion?: string
 }
 
 type CliOptions = {
@@ -78,6 +85,13 @@ type CliOptions = {
   force: boolean
   args: string[]
 }
+
+type ClaudeTargetKind = 'direct-js' | 'native-wrapper'
+
+const MANAGED_LAUNCHER_MARKER = '__HIPPOCODE_MANAGED_LAUNCHER__'
+const OFFICIAL_CLAUDE_PACKAGE_NAME = '@anthropic-ai/claude-code'
+const DEFAULT_MANAGED_CLAUDE_CODE_VERSION =
+  VALIDATED_CLAUDE_CODE_VERSIONS.at(-1) ?? '2.1.112'
 
 function printUsage(): void {
   console.log(`claude-theme-patch
@@ -173,6 +187,24 @@ function getPatchMetadataPath(): string {
 
 function getCustomThemePackPath(): string {
   return join(homedir(), '.claude', 'hippocode-custom-themes.json')
+}
+
+function getManagedRuntimeRoot(): string {
+  return join(homedir(), '.claude', 'hippocode-managed-runtime')
+}
+
+function getManagedRuntimeDir(version: string): string {
+  return join(getManagedRuntimeRoot(), `claude-code-${version}`)
+}
+
+function getManagedRuntimeTargetPath(version: string): string {
+  return join(
+    getManagedRuntimeDir(version),
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code',
+    'cli.js',
+  )
 }
 
 function ensureParentDir(path: string): void {
@@ -318,16 +350,52 @@ function haveSameThemeNames(
   return right.every(theme => leftSet.has(theme))
 }
 
-function getClaudeBinaryPath(): string | null {
-  try {
-    const path = execFileSync('which', ['claude'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-    return path === '' ? null : path
-  } catch {
+function getOfficialClaudePackageDir(targetPath: string): string | null {
+  const packageDir = dirname(dirname(targetPath))
+  const packageJsonPath = join(packageDir, 'package.json')
+  const packageJson = readJsonFile<{ name?: string }>(packageJsonPath)
+
+  if (packageJson?.name !== OFFICIAL_CLAUDE_PACKAGE_NAME) {
     return null
   }
+
+  return packageDir
+}
+
+function isOfficialClaudeTarget(targetPath: string): boolean {
+  return getOfficialClaudePackageDir(targetPath) !== null
+}
+
+function getClaudeBinaryCandidates(): string[] {
+  try {
+    return execFileSync('which', ['-a', 'claude'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .split(/\r?\n/)
+      .map(path => path.trim())
+      .filter(path => path !== '')
+  } catch {
+    return []
+  }
+}
+
+function getClaudeBinaryPath(): string | null {
+  const candidates = getClaudeBinaryCandidates()
+  if (candidates.length === 0) {
+    return null
+  }
+
+  const officialCandidate =
+    candidates.find(candidate => {
+      try {
+        return isOfficialClaudeTarget(realpathSync(resolve(candidate)))
+      } catch {
+        return false
+      }
+    }) ?? null
+
+  return officialCandidate ?? candidates[0] ?? null
 }
 
 function resolveClaudeTargetPath(targetPath?: string): string {
@@ -350,13 +418,30 @@ function readTargetSource(targetPath: string): string {
   return readFileSync(targetPath, 'utf8')
 }
 
+function readTargetTextIfPresent(targetPath: string): string | null {
+  const source = readFileSync(targetPath)
+  return source.includes(0) ? null : source.toString('utf8')
+}
+
 function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
+function isJavaScriptTarget(targetPath: string): boolean {
+  return (
+    targetPath.endsWith('.js') ||
+    targetPath.endsWith('.cjs') ||
+    targetPath.endsWith('.mjs')
+  )
+}
+
 function getClaudeVersionForTarget(targetPath: string): string | null {
   try {
-    return execFileSync('node', [targetPath, '--version'], {
+    const command = isJavaScriptTarget(targetPath) ? 'node' : targetPath
+    const args = isJavaScriptTarget(targetPath)
+      ? [targetPath, '--version']
+      : ['--version']
+    return execFileSync(command, args, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
@@ -404,6 +489,29 @@ function isPatchedSource(source: string): boolean {
   return source.includes(PATCH_MARKER)
 }
 
+function isManagedLauncherSource(source: string | null): boolean {
+  return typeof source === 'string' && source.includes(MANAGED_LAUNCHER_MARKER)
+}
+
+function detectClaudeTargetKind(targetPath: string): ClaudeTargetKind {
+  if (isJavaScriptTarget(targetPath)) {
+    return 'direct-js'
+  }
+
+  const packageDir = getOfficialClaudePackageDir(targetPath)
+  if (
+    basename(targetPath) === 'claude.exe' &&
+    packageDir &&
+    existsSync(join(packageDir, 'cli-wrapper.cjs'))
+  ) {
+    return 'native-wrapper'
+  }
+
+  throw new Error(
+    `Unsupported Claude Code target: ${targetPath}. Expected an official Claude Code cli.js entrypoint or npm wrapper binary.`,
+  )
+}
+
 function patchClaudeSource(
   source: string,
   installedAt: string,
@@ -418,6 +526,100 @@ function patchClaudeSource(
   return applyClaudeCodePatch(source, adapter, { installedAt, themePayload })
 }
 
+function ensureManagedRuntimePackageJson(runtimeDir: string): void {
+  const packageJsonPath = join(runtimeDir, 'package.json')
+  if (existsSync(packageJsonPath)) {
+    return
+  }
+
+  ensureParentDir(packageJsonPath)
+  writeFileSync(
+    packageJsonPath,
+    `${JSON.stringify(
+      {
+        name: 'hippocode-managed-claude-runtime',
+        private: true,
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+}
+
+function ensureManagedClaudeRuntime(
+  version: string,
+  refresh = false,
+): {
+  runtimeDir: string
+  targetPath: string
+} {
+  const runtimeDir = getManagedRuntimeDir(version)
+  const targetPath = getManagedRuntimeTargetPath(version)
+
+  if (refresh && existsSync(runtimeDir)) {
+    rmSync(runtimeDir, { recursive: true, force: true })
+  }
+
+  if (!existsSync(targetPath)) {
+    mkdirSync(runtimeDir, { recursive: true })
+    ensureManagedRuntimePackageJson(runtimeDir)
+
+    try {
+      execFileSync(
+        'npm',
+        [
+          'install',
+          '--prefix',
+          runtimeDir,
+          '--no-save',
+          `${OFFICIAL_CLAUDE_PACKAGE_NAME}@${version}`,
+        ],
+        {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
+    } catch (error) {
+      const message =
+        error instanceof Error && 'message' in error ? error.message : String(error)
+      throw new Error(
+        `Failed to install managed Claude Code ${version}. npm install exited with: ${message}`,
+      )
+    }
+  }
+
+  if (!existsSync(targetPath)) {
+    throw new Error(
+      `Managed Claude Code runtime ${version} is missing cli.js after install: ${targetPath}`,
+    )
+  }
+
+  return { runtimeDir, targetPath }
+}
+
+function buildManagedLauncherSource(managedTargetPath: string): string {
+  return [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    `# ${MANAGED_LAUNCHER_MARKER}`,
+    `exec node ${JSON.stringify(managedTargetPath)} "$@"`,
+    '',
+  ].join('\n')
+}
+
+function installManagedLauncher(
+  launcherTargetPath: string,
+  managedTargetPath: string,
+): void {
+  writeFileSync(
+    launcherTargetPath,
+    buildManagedLauncherSource(managedTargetPath),
+    'utf8',
+  )
+  chmodSync(launcherTargetPath, 0o755)
+}
+
 function backupTargetFile(targetPath: string): string {
   const backupPath = join(
     getClaudeBackupDir(),
@@ -428,7 +630,7 @@ function backupTargetFile(targetPath: string): string {
   return backupPath
 }
 
-function verifyPatchedTarget(targetPath: string): void {
+function verifyPatchedJavaScriptTarget(targetPath: string): void {
   const source = readTargetSource(targetPath)
   if (!hasCurrentPatchFeatures(source)) {
     throw new Error('Patched Claude Code target is missing the Hippocode marker.')
@@ -440,7 +642,7 @@ function verifyPatchedTarget(targetPath: string): void {
   }
 }
 
-function verifyUnpatchedTarget(targetPath: string): void {
+function verifyUnpatchedJavaScriptTarget(targetPath: string): void {
   const source = readTargetSource(targetPath)
   if (isPatchedSource(source)) {
     throw new Error('Claude Code target still contains the Hippocode patch marker.')
@@ -448,6 +650,37 @@ function verifyUnpatchedTarget(targetPath: string): void {
 
   const version = getClaudeVersionForTarget(targetPath)
   if (!version) {
+    throw new Error('Restored Claude Code failed to start with --version.')
+  }
+}
+
+function verifyManagedLauncherTarget(
+  launcherTargetPath: string,
+  managedTargetPath: string,
+): void {
+  verifyPatchedJavaScriptTarget(managedTargetPath)
+
+  if (!isManagedLauncherSource(readTargetTextIfPresent(launcherTargetPath))) {
+    throw new Error('Managed Claude launcher marker is missing from the target.')
+  }
+
+  if (!getClaudeVersionForTarget(launcherTargetPath)) {
+    throw new Error('Managed Claude launcher failed to start with --version.')
+  }
+}
+
+function verifyRestoredTarget(targetPath: string): void {
+  const targetText = readTargetTextIfPresent(targetPath)
+  if (isManagedLauncherSource(targetText)) {
+    throw new Error('Restored Claude Code target still contains the managed launcher.')
+  }
+
+  if (isJavaScriptTarget(targetPath)) {
+    verifyUnpatchedJavaScriptTarget(targetPath)
+    return
+  }
+
+  if (!getClaudeVersionForTarget(targetPath)) {
     throw new Error('Restored Claude Code failed to start with --version.')
   }
 }
@@ -462,14 +695,21 @@ function getThemePayloadSha256(themePayload: PatchThemePayload): string {
 
 function setClaudeTheme(theme: SupportedTheme, targetPath: string): void {
   if (!isOfficialTheme(theme)) {
-    const source = readTargetSource(targetPath)
+    const metadata = readPatchMetadata()
+    const patchSourcePath =
+      metadata?.targetPath === targetPath &&
+      metadata.strategy === 'managed-runtime-launcher' &&
+      metadata.managedTargetPath
+        ? metadata.managedTargetPath
+        : targetPath
+
+    const source = readTargetSource(patchSourcePath)
     if (!isPatchedSource(source)) {
       throw new Error(
         `Theme "${theme}" requires a patched Claude Code build. Run claude-theme-patch install ${theme} first.`,
       )
     }
 
-    const metadata = readPatchMetadata()
     const embeddedThemes =
       metadata?.targetPath === targetPath && Array.isArray(metadata.themeNames)
         ? metadata.themeNames
@@ -556,15 +796,24 @@ function commandList(): void {
 }
 
 function commandStatus(targetPath: string): void {
-  const source = readTargetSource(targetPath)
   const metadata = readPatchMetadata()
   const customThemePack = readCustomThemePack()
   const version = getClaudeVersionForTarget(targetPath)
   const parsedVersion = parseClaudeVersion(version)
+  const patchSourcePath =
+    metadata?.targetPath === targetPath &&
+    metadata.strategy === 'managed-runtime-launcher' &&
+    metadata.managedTargetPath
+      ? metadata.managedTargetPath
+      : targetPath
+  const patchInstalled =
+    existsSync(patchSourcePath) && isJavaScriptTarget(patchSourcePath)
+      ? isPatchedSource(readTargetSource(patchSourcePath))
+      : isManagedLauncherSource(readTargetTextIfPresent(targetPath))
 
   console.log(`Claude Code: ${version ?? 'unknown'}`)
   console.log(`target: ${targetPath}`)
-  console.log(`patch: ${isPatchedSource(source) ? 'installed' : 'not installed'}`)
+  console.log(`patch: ${patchInstalled ? 'installed' : 'not installed'}`)
   console.log(`theme: ${getCurrentTheme()}`)
   console.log(`customPack: ${getCustomThemePackPath()}`)
   console.log(`customThemes: ${customThemePack.themes.length} imported`)
@@ -581,6 +830,15 @@ function commandStatus(targetPath: string): void {
     console.log(`backup: ${metadata.backupPath}`)
     console.log(`installedAt: ${metadata.installedAt}`)
     console.log(`patchedSha256: ${metadata.sha256}`)
+    if (metadata.strategy) {
+      console.log(`strategy: ${metadata.strategy}`)
+    }
+    if (metadata.managedRuntimeDir) {
+      console.log(`managedRuntime: ${metadata.managedRuntimeDir}`)
+    }
+    if (metadata.managedTargetPath) {
+      console.log(`managedTarget: ${metadata.managedTargetPath}`)
+    }
     if (Array.isArray(metadata.themeNames)) {
       console.log(
         `embeddedThemes: ${metadata.themeNames.length} managed (${metadata.customThemeCount ?? 0} custom)`,
@@ -597,15 +855,46 @@ function commandPaths(targetPath: string): void {
   console.log(`backups: ${getClaudeBackupDir()}`)
   console.log(`metadata: ${getPatchMetadataPath()}`)
   console.log(`customPack: ${getCustomThemePackPath()}`)
+  console.log(`managedRuntimeRoot: ${getManagedRuntimeRoot()}`)
 }
 
-function commandInstall(
+function installPatchIntoFreshJavaScriptTarget(
   targetPath: string,
-  theme?: SupportedTheme,
-  force = false,
+  themePayload: PatchThemePayload,
+  force: boolean,
+): {
+  claudeVersion: string | null
+  installedAt: string
+  patchedSource: string
+} {
+  const source = readTargetSource(targetPath)
+  const claudeVersion = assertValidatedClaudeVersion(targetPath, force)
+  const installedAt = new Date().toISOString()
+  const patchedSource = patchClaudeSource(
+    source,
+    installedAt,
+    claudeVersion,
+    force,
+    themePayload,
+  )
+
+  writeFileSync(targetPath, patchedSource, 'utf8')
+  verifyPatchedJavaScriptTarget(targetPath)
+
+  return {
+    claudeVersion,
+    installedAt,
+    patchedSource,
+  }
+}
+
+function commandInstallDirectJavaScriptTarget(
+  targetPath: string,
+  themePayload: PatchThemePayload,
+  themePayloadSha256: string,
+  theme: SupportedTheme | undefined,
+  force: boolean,
 ): void {
-  const themePayload = buildManagedThemePayload()
-  const themePayloadSha256 = getThemePayloadSha256(themePayload)
   let source = readTargetSource(targetPath)
   let backupPath: string | null = null
 
@@ -633,43 +922,35 @@ function commandInstall(
     } else {
       backupPath = metadata.backupPath
       copyFileSync(backupPath, targetPath)
-      verifyUnpatchedTarget(targetPath)
+      verifyUnpatchedJavaScriptTarget(targetPath)
       source = readTargetSource(targetPath)
       console.log(`Restored previous backup from ${backupPath}`)
     }
   }
 
   if (!isPatchedSource(source)) {
-    const claudeVersion = assertValidatedClaudeVersion(targetPath, force)
     const patchBackupPath = backupPath ?? backupTargetFile(targetPath)
-    const installedAt = new Date().toISOString()
-    const patchedSource = patchClaudeSource(
-      source,
-      installedAt,
-      claudeVersion,
-      force,
-      themePayload,
-    )
 
     try {
-      writeFileSync(targetPath, patchedSource, 'utf8')
-      verifyPatchedTarget(targetPath)
+      const { claudeVersion, installedAt, patchedSource } =
+        installPatchIntoFreshJavaScriptTarget(targetPath, themePayload, force)
+
+      writePatchMetadata({
+        version: PATCHER_VERSION,
+        targetPath,
+        backupPath: patchBackupPath,
+        installedAt,
+        claudeVersion,
+        sha256: sha256(patchedSource),
+        themeNames: themePayload.themeNames,
+        customThemeCount: themePayload.customThemeCount,
+        themePayloadSha256,
+        strategy: 'direct-js',
+      })
     } catch (error) {
       copyFileSync(patchBackupPath, targetPath)
       throw error
     }
-
-    writePatchMetadata({
-      version: PATCHER_VERSION,
-      targetPath,
-      backupPath: patchBackupPath,
-      installedAt,
-      claudeVersion,
-      sha256: sha256(patchedSource),
-      themeNames: themePayload.themeNames,
-      customThemeCount: themePayload.customThemeCount,
-      themePayloadSha256,
-    })
 
     if (!backupPath) {
       console.log(`Backed up original Claude Code to ${patchBackupPath}`)
@@ -681,6 +962,137 @@ function commandInstall(
 
   if (theme) {
     setClaudeTheme(theme, targetPath)
+  }
+}
+
+function commandInstallManagedRuntimeLauncher(
+  targetPath: string,
+  themePayload: PatchThemePayload,
+  themePayloadSha256: string,
+  theme: SupportedTheme | undefined,
+  force: boolean,
+): void {
+  const metadata = readPatchMetadata()
+  const existingLauncherSource = readTargetTextIfPresent(targetPath)
+  const managedVersion = DEFAULT_MANAGED_CLAUDE_CODE_VERSION
+  const currentManagedTargetPath =
+    metadata?.targetPath === targetPath &&
+    metadata.strategy === 'managed-runtime-launcher' &&
+    metadata.managedTargetPath
+      ? metadata.managedTargetPath
+      : getManagedRuntimeTargetPath(managedVersion)
+  const managedSource =
+    existsSync(currentManagedTargetPath) && isJavaScriptTarget(currentManagedTargetPath)
+      ? readTargetSource(currentManagedTargetPath)
+      : null
+  const managedPatchInstalled =
+    managedSource !== null && hasCurrentPatchFeatures(managedSource)
+  const needsRefresh =
+    !metadata ||
+    metadata.targetPath !== targetPath ||
+    metadata.strategy !== 'managed-runtime-launcher' ||
+    !existsSync(metadata.backupPath) ||
+    !isManagedLauncherSource(existingLauncherSource) ||
+    metadata.version !== PATCHER_VERSION ||
+    !haveSameThemeNames(metadata.themeNames, themePayload.themeNames) ||
+    metadata.customThemeCount !== themePayload.customThemeCount ||
+    metadata.themePayloadSha256 !== themePayloadSha256 ||
+    metadata.managedClaudeVersion !== managedVersion ||
+    !managedPatchInstalled
+  const launcherBackupPath =
+    metadata?.targetPath === targetPath &&
+    metadata.strategy === 'managed-runtime-launcher' &&
+    existsSync(metadata.backupPath)
+      ? metadata.backupPath
+      : backupTargetFile(targetPath)
+  const { runtimeDir, targetPath: managedTargetPath } = ensureManagedClaudeRuntime(
+    managedVersion,
+    needsRefresh,
+  )
+  let patchResult:
+    | {
+        claudeVersion: string | null
+        installedAt: string
+        patchedSource: string
+      }
+    | undefined
+
+  if (!needsRefresh) {
+    console.log(`Managed launcher already installed at ${targetPath}`)
+  } else {
+    try {
+      patchResult = installPatchIntoFreshJavaScriptTarget(
+        managedTargetPath,
+        themePayload,
+        force,
+      )
+      installManagedLauncher(targetPath, managedTargetPath)
+      verifyManagedLauncherTarget(targetPath, managedTargetPath)
+    } catch (error) {
+      copyFileSync(launcherBackupPath, targetPath)
+      throw error
+    }
+
+    writePatchMetadata({
+      version: PATCHER_VERSION,
+      targetPath,
+      backupPath: launcherBackupPath,
+      installedAt: patchResult.installedAt,
+      claudeVersion: patchResult.claudeVersion,
+      sha256: sha256(patchResult.patchedSource),
+      themeNames: themePayload.themeNames,
+      customThemeCount: themePayload.customThemeCount,
+      themePayloadSha256,
+      strategy: 'managed-runtime-launcher',
+      managedTargetPath,
+      managedRuntimeDir: runtimeDir,
+      managedClaudeVersion: managedVersion,
+    })
+
+    if (
+      metadata?.targetPath === targetPath &&
+      metadata.strategy === 'managed-runtime-launcher'
+    ) {
+      console.log(`Refreshed Hippocode managed launcher at ${targetPath}`)
+    } else {
+      console.log(`Backed up official Claude launcher to ${launcherBackupPath}`)
+      console.log(
+        `Installed Hippocode managed launcher into ${targetPath} using Claude Code ${managedVersion}`,
+      )
+    }
+  }
+
+  if (theme) {
+    setClaudeTheme(theme, targetPath)
+  }
+}
+
+function commandInstall(
+  targetPath: string,
+  theme?: SupportedTheme,
+  force = false,
+): void {
+  const themePayload = buildManagedThemePayload()
+  const themePayloadSha256 = getThemePayloadSha256(themePayload)
+  switch (detectClaudeTargetKind(targetPath)) {
+    case 'direct-js':
+      commandInstallDirectJavaScriptTarget(
+        targetPath,
+        themePayload,
+        themePayloadSha256,
+        theme,
+        force,
+      )
+      return
+    case 'native-wrapper':
+      commandInstallManagedRuntimeLauncher(
+        targetPath,
+        themePayload,
+        themePayloadSha256,
+        theme,
+        force,
+      )
+      return
   }
 }
 
@@ -785,9 +1197,17 @@ function commandRemove(targetPath: string): void {
   }
 
   copyFileSync(metadata.backupPath, targetPath)
-  verifyUnpatchedTarget(targetPath)
+  verifyRestoredTarget(targetPath)
   clearManagedThemeIfNeeded()
   deletePatchMetadata()
+
+  if (
+    metadata.strategy === 'managed-runtime-launcher' &&
+    metadata.managedRuntimeDir &&
+    existsSync(metadata.managedRuntimeDir)
+  ) {
+    rmSync(metadata.managedRuntimeDir, { recursive: true, force: true })
+  }
 
   console.log(`Restored official Claude Code from ${metadata.backupPath}`)
 }

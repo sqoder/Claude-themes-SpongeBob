@@ -6,10 +6,11 @@ The npm package published from this repository is still named `claude-code-theme
 
 This package is the second-stage installer:
 
-1. it finds the official Claude Code `cli.js`
-2. it backs up the original file to `~/.claude/backups/`
-3. it injects bundled plus imported custom themes into the official theme registry
-4. it can restore the original install later
+1. it finds the official Claude Code install
+2. it chooses the right patch strategy for that install shape
+3. it backs up the original entrypoint to `~/.claude/backups/`
+4. it injects bundled plus imported custom themes into a validated Claude Code runtime
+5. it can restore the original install later
 
 ## Quick Start
 
@@ -96,6 +97,7 @@ claude-theme-patch set bubble-bass
 - Claude Code config: `~/.claude.json`
 - Patch metadata: `~/.claude/hippocode-theme-patch.json`
 - Imported custom theme pack: `~/.claude/hippocode-custom-themes.json`
+- Managed Claude runtime cache: `~/.claude/hippocode-managed-runtime/`
 - Backups: `~/.claude/backups/`
 
 ## Custom Theme Pack Format
@@ -125,12 +127,13 @@ Notes:
 
 ## Notes
 
-- This tool modifies the official Claude Code install in place.
-- It is intentionally coupled to Claude Code's current bundled `cli.js` structure.
+- On classic JS-based Claude Code installs, this tool patches the official `cli.js` in place.
+- On newer npm-wrapper installs that ship a native `bin/claude.exe`, `init` installs a managed validated Claude Code runtime under `~/.claude/hippocode-managed-runtime/` and swaps the wrapper entrypoint to launch that patched runtime.
+- `remove` restores the original official launcher and deletes the managed runtime cache for that install.
 - Version-specific patch matchers live under `src/adapters/`; add a new adapter instead of growing `src/cli.ts`.
 - This release is validated against Claude Code `2.1.112`.
 - When Claude Code updates, you may need to rerun the patcher or publish a new patcher build.
-- Use `--target <path>` to patch a copied `cli.js` during testing instead of touching the real install.
+- Use `--target <path>` to patch a copied `cli.js` or a copied official wrapper during testing instead of touching the real install.
 - `init` is the shortest supported user path; it patches Claude Code and sets a theme in one command.
 - `status` reports whether the detected Claude Code version is inside the validated set.
 - `install` blocks unvalidated Claude Code versions unless you pass `--force`.
@@ -151,6 +154,7 @@ This repository now includes a GitHub Actions publish workflow at `.github/workf
 Release docs:
 
 - Current release body: `docs/releases/v0.2.1.md`
+- Native-wrapper release body: `docs/releases/v0.2.2.md`
 - Next automated release checklist: `docs/releases/0.2.2-checklist.md`
 - Project changelog: `CHANGELOG.md`
 
@@ -174,7 +178,7 @@ Notes:
 
 - The workflow uses npm trusted publishing through GitHub Actions OIDC.
 - `package.json` already points `repository.url` at `https://github.com/sqoder/Claude-themes-SpongeBob.git`, which npm requires to match the publishing repository for trusted publishing.
-- npm package name lookup returned `404 Not Found` on `2026-04-18`, so `claude-code-theme-patcher` did not appear to be published at that time.
+- npm package `claude-code-theme-patcher` is published publicly on npm.
 
 ## Development
 

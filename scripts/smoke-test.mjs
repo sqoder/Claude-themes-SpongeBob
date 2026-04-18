@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -72,6 +80,44 @@ function writeFixture(homeDir, name, version) {
   return targetPath
 }
 
+function writeNativeWrapperFixture(name, version = '2.1.114 (Claude Code)') {
+  const packageDir = join(tempRoot, `${name}-native`, '@anthropic-ai', 'claude-code')
+  const targetPath = join(packageDir, 'bin', 'claude.exe')
+
+  mkdirSync(join(packageDir, 'bin'), { recursive: true })
+  writeFileSync(
+    join(packageDir, 'package.json'),
+    `${JSON.stringify(
+      {
+        name: '@anthropic-ai/claude-code',
+        version: version.match(/\b\d+\.\d+\.\d+\b/)?.[0] ?? '2.1.114',
+        bin: {
+          claude: 'bin/claude.exe',
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+  writeFileSync(join(packageDir, 'cli-wrapper.cjs'), 'module.exports = {}\n', 'utf8')
+  writeFileSync(
+    targetPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "--version" ]; then
+  printf ${JSON.stringify(`${version}\\n`)}
+  exit 0
+fi
+printf 'fixture native wrapper\\n'
+`,
+    'utf8',
+  )
+  chmodSync(targetPath, 0o755)
+
+  return targetPath
+}
+
 function writeCustomThemePack(path, accent, shimmer, promptBorder) {
   writeFileSync(
     path,
@@ -98,6 +144,7 @@ try {
   const validatedHomeDir = join(tempRoot, 'validated-home')
   const initWithPackHomeDir = join(tempRoot, 'init-with-pack-home')
   const unsupportedHomeDir = join(tempRoot, 'unsupported-home')
+  const nativeWrapperHomeDir = join(tempRoot, 'native-wrapper-home')
   const customThemePackPath = join(tempRoot, 'jellyfish-pack.json')
   const validatedTarget = writeFixture(
     validatedHomeDir,
@@ -114,7 +161,9 @@ try {
     'init-with-pack',
     '2.1.112 (Claude Code)',
   )
+  const nativeWrapperTarget = writeNativeWrapperFixture('native-wrapper')
   const originalValidatedSource = readFileSync(validatedTarget, 'utf8')
+  const originalNativeWrapperSource = readFileSync(nativeWrapperTarget, 'utf8')
 
   writeCustomThemePack(
     customThemePackPath,
@@ -227,6 +276,51 @@ try {
     unsupportedHomeDir,
   )
   assert.match(forcedInstallOutput, /Proceeding because --force was provided/)
+
+  const nativeWrapperInitOutput = runCli(
+    ['--target', nativeWrapperTarget, 'init'],
+    nativeWrapperHomeDir,
+  )
+  assert.match(nativeWrapperInitOutput, /Installed Hippocode managed launcher/)
+  assert.match(nativeWrapperInitOutput, /Claude Code theme set: unset -> spongebob/)
+  assert.equal(
+    JSON.parse(readFileSync(join(nativeWrapperHomeDir, '.claude.json'), 'utf8')).theme,
+    'spongebob',
+  )
+
+  const nativeWrapperStatusOutput = runCli(
+    ['--target', nativeWrapperTarget, 'status'],
+    nativeWrapperHomeDir,
+  )
+  assert.match(nativeWrapperStatusOutput, /strategy: managed-runtime-launcher/)
+  assert.match(nativeWrapperStatusOutput, /patch: installed/)
+  assert.match(nativeWrapperStatusOutput, /validated: yes \(2\.1\.112\)/)
+  assert.match(nativeWrapperStatusOutput, /managedTarget: .*cli\.js/)
+
+  const managedRuntimeVersion = spawnSync(nativeWrapperTarget, ['--version'], {
+    env: { ...process.env, HOME: nativeWrapperHomeDir },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  assert.equal(managedRuntimeVersion.status, 0)
+  assert.equal(managedRuntimeVersion.stdout.trim(), '2.1.112 (Claude Code)')
+
+  const nativeWrapperMetadata = JSON.parse(
+    readFileSync(join(nativeWrapperHomeDir, '.claude', 'hippocode-theme-patch.json'), 'utf8'),
+  )
+  assert.equal(nativeWrapperMetadata.strategy, 'managed-runtime-launcher')
+  assert.equal(
+    readFileSync(nativeWrapperTarget, 'utf8').includes('__HIPPOCODE_MANAGED_LAUNCHER__'),
+    true,
+  )
+
+  const nativeWrapperRemoveOutput = runCli(
+    ['--target', nativeWrapperTarget, 'remove'],
+    nativeWrapperHomeDir,
+  )
+  assert.match(nativeWrapperRemoveOutput, /Restored official Claude Code/)
+  assert.equal(readFileSync(nativeWrapperTarget, 'utf8'), originalNativeWrapperSource)
+  assert.equal(existsSync(nativeWrapperMetadata.managedRuntimeDir), false)
 
   const removeOutput = runCli(
     ['--target', validatedTarget, 'remove'],
