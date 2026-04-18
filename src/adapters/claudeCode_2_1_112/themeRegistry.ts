@@ -27,8 +27,11 @@ export const patchThemeRegistry: ClaudeCodePatchStep = (source, context) => {
     throw new Error('Claude Code theme option list was empty. Aborting patch.')
   }
 
-  const extendedThemes = buildSupportedThemeList(existingThemes)
-  const nextThemeList = `$1=${JSON.stringify(extendedThemes)},$2=["auto",...$1],${buildPatchAssignments(context.installedAt)}`
+  const extendedThemes = buildSupportedThemeList(
+    existingThemes,
+    context.themePayload.themeNames,
+  )
+  const nextThemeList = `$1=${JSON.stringify(extendedThemes)},$2=["auto",...$1],${buildPatchAssignments(context.installedAt, context.themePayload)}`
   const patchedSource = source.replace(THEME_LIST_PATTERN, nextThemeList)
 
   if (patchedSource === source) {

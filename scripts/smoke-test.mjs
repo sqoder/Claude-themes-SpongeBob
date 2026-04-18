@@ -72,9 +72,32 @@ function writeFixture(homeDir, name, version) {
   return targetPath
 }
 
+function writeCustomThemePack(path, accent, shimmer, promptBorder) {
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        themes: [
+          {
+            name: 'jellyfish-fields',
+            displayName: 'Jellyfish Fields',
+            accent,
+            shimmer,
+            promptBorder,
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  )
+}
+
 try {
   const validatedHomeDir = join(tempRoot, 'validated-home')
   const unsupportedHomeDir = join(tempRoot, 'unsupported-home')
+  const customThemePackPath = join(tempRoot, 'jellyfish-pack.json')
   const validatedTarget = writeFixture(
     validatedHomeDir,
     'validated',
@@ -87,11 +110,18 @@ try {
   )
   const originalValidatedSource = readFileSync(validatedTarget, 'utf8')
 
+  writeCustomThemePack(
+    customThemePackPath,
+    '#b982ff',
+    '#e9d5ff',
+    '#7d5fa8',
+  )
+
   const installOutput = runCli(
     ['--target', validatedTarget, 'install', 'spongebob'],
     validatedHomeDir,
   )
-  assert.match(installOutput, /Installed Hippocode Pixel theme patch/)
+  assert.match(installOutput, /Installed Hippocode theme patch/)
   assert.match(installOutput, /Claude Code theme set: unset -> spongebob/)
   assert.equal(
     JSON.parse(readFileSync(join(validatedHomeDir, '.claude.json'), 'utf8')).theme,
@@ -104,6 +134,7 @@ try {
   )
   assert.match(statusOutput, /patch: installed/)
   assert.match(statusOutput, /theme: spongebob/)
+  assert.match(statusOutput, /customThemes: 0 imported/)
   assert.match(statusOutput, /validated: yes \(2\.1\.112\)/)
 
   const setOutput = runCli(
@@ -115,6 +146,47 @@ try {
     JSON.parse(readFileSync(join(validatedHomeDir, '.claude.json'), 'utf8')).theme,
     'bubble-bass',
   )
+
+  const importOutput = runCli(
+    ['--target', validatedTarget, 'import-theme', customThemePackPath],
+    validatedHomeDir,
+  )
+  assert.match(importOutput, /Imported 1 custom theme seed/)
+  assert.match(importOutput, /Embedded imported custom themes/)
+  assert.match(readFileSync(validatedTarget, 'utf8'), /jellyfish-fields/)
+
+  const listOutput = runCli(['list'], validatedHomeDir)
+  assert.match(listOutput, /Imported custom themes:/)
+  assert.match(listOutput, /jellyfish-fields/)
+  assert.match(listOutput, /light-jellyfish-fields/)
+
+  const customSetOutput = runCli(
+    ['--target', validatedTarget, 'set', 'light-jellyfish-fields'],
+    validatedHomeDir,
+  )
+  assert.match(
+    customSetOutput,
+    /Claude Code theme set: bubble-bass -> light-jellyfish-fields/,
+  )
+  assert.equal(
+    JSON.parse(readFileSync(join(validatedHomeDir, '.claude.json'), 'utf8')).theme,
+    'light-jellyfish-fields',
+  )
+
+  writeCustomThemePack(
+    customThemePackPath,
+    '#1234ab',
+    '#6b84d6',
+    '#3450a8',
+  )
+
+  const reimportOutput = runCli(
+    ['--target', validatedTarget, 'import-theme', customThemePackPath],
+    validatedHomeDir,
+  )
+  assert.match(reimportOutput, /Refreshed Hippocode theme patch/)
+  assert.match(readFileSync(validatedTarget, 'utf8'), /rgb\(18,52,171\)/)
+  assert.doesNotMatch(readFileSync(validatedTarget, 'utf8'), /rgb\(185,130,255\)/)
 
   let unsupportedError = ''
   try {

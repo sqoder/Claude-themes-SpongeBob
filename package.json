@@ -1,7 +1,7 @@
 {
   "name": "claude-code-theme-patcher",
-  "version": "0.1.19",
-  "description": "Patch official Claude Code installs to inject Hippocode Pixel themes.",
+  "version": "0.2.0",
+  "description": "Patch official Claude Code installs to inject bundled and custom Hippocode themes.",
   "type": "module",
   "bin": {
     "claude-theme-patch": "./dist/cli.js"

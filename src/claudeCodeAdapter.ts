@@ -1,8 +1,10 @@
 import { claudeCode_2_1_112_Adapter } from './adapters/claudeCode_2_1_112.js'
 import { hasCurrentPatchFeatures } from './patchRuntime.js'
+import type { PatchThemePayload } from './themePayload.js'
 
 export type ClaudeCodePatchContext = {
   installedAt: string
+  themePayload: PatchThemePayload
 }
 
 export type ClaudeCodePatchStep = (

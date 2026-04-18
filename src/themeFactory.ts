@@ -1,6 +1,6 @@
-type Theme = Record<string, string>
+export type Theme = Record<string, string>
 
-type PixelThemeSeed = {
+export type PixelThemeSeed = {
   name: string
   displayName: string
   accent: string
@@ -8,12 +8,16 @@ type PixelThemeSeed = {
   promptBorder: string
 }
 
-type ThemePickerOption = {
+export type ThemePickerOption = {
   label: string
   value: string
 }
 
-type PixelStartupPose = 'default' | 'arms-up' | 'look-left' | 'look-right'
+export type PixelStartupPose =
+  | 'default'
+  | 'arms-up'
+  | 'look-left'
+  | 'look-right'
 
 type PixelBounds = {
   minX: number

@@ -8,7 +8,7 @@ This package is the second-stage installer:
 
 1. it finds the official Claude Code `cli.js`
 2. it backs up the original file to `~/.claude/backups/`
-3. it injects Hippocode Pixel themes into the official theme registry
+3. it injects bundled plus imported custom themes into the official theme registry
 4. it can restore the original install later
 
 ## Install
@@ -31,6 +31,8 @@ npm install -g claude-code-theme-patcher
 claude-theme-patch list
 claude-theme-patch status
 claude-theme-patch install spongebob
+claude-theme-patch import-theme ./my-themes.json
+claude-theme-patch sync
 claude-theme-patch set light-patrick
 claude-theme-patch remove
 ```
@@ -55,6 +57,13 @@ Switch later without reinstalling:
 npx claude-code-theme-patcher set bubble-bass
 ```
 
+Import your own theme pack, re-embed it into Claude Code, then switch to it:
+
+```bash
+npx claude-code-theme-patcher import-theme ./my-themes.json
+npx claude-code-theme-patcher set jellyfish-fields
+```
+
 Or install once globally, then reuse the local command:
 
 ```bash
@@ -67,7 +76,33 @@ claude-theme-patch set bubble-bass
 
 - Claude Code config: `~/.claude.json`
 - Patch metadata: `~/.claude/hippocode-theme-patch.json`
+- Imported custom theme pack: `~/.claude/hippocode-custom-themes.json`
 - Backups: `~/.claude/backups/`
+
+## Custom Theme Pack Format
+
+Custom themes are imported from JSON and expanded into a dark + light pair automatically.
+
+```json
+{
+  "themes": [
+    {
+      "name": "jellyfish-fields",
+      "displayName": "Jellyfish Fields",
+      "accent": "#b982ff",
+      "shimmer": "#e9d5ff",
+      "promptBorder": "#7d5fa8"
+    }
+  ]
+}
+```
+
+Notes:
+
+- `name` becomes `name` and `light-name`
+- colors accept `#rrggbb`, `#rgb`, or `rgb(r,g,b)`
+- `displayName`, `shimmer`, and `promptBorder` are optional
+- importing a theme with the same name updates the saved definition
 
 ## Notes
 
@@ -79,7 +114,9 @@ claude-theme-patch set bubble-bass
 - Use `--target <path>` to patch a copied `cli.js` during testing instead of touching the real install.
 - `status` reports whether the detected Claude Code version is inside the validated set.
 - `install` blocks unvalidated Claude Code versions unless you pass `--force`.
-- After patching, users can switch Hippocode Pixel themes from Claude Code `/theme` or via `claude-theme-patch set <theme>`.
+- `import-theme` persists custom theme seeds and refreshes the current patch automatically when metadata is available.
+- `sync` rebuilds the installed patch using the current saved custom theme pack.
+- After patching, users can switch official, bundled, and imported custom themes from Claude Code `/theme` or via `claude-theme-patch set <theme>`.
 
 ## Release Check
 

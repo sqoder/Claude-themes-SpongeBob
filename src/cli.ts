@@ -17,7 +17,6 @@ import { basename, dirname, join, resolve } from 'node:path'
 import {
   BASE_PIXEL_THEME_SEEDS,
   PIXEL_THEME_NAMES,
-  isPixelThemeName,
 } from './themeFactory.js'
 import {
   applyClaudeCodePatch,
@@ -26,10 +25,22 @@ import {
   resolveClaudeCodeAdapter,
 } from './claudeCodeAdapter.js'
 import {
+  buildCustomThemePayload,
+  createEmptyCustomThemePack,
+  mergeCustomThemePacks,
+  normalizeCustomThemePack,
+  type StoredCustomThemePack,
+} from './customThemes.js'
+import {
   PATCHER_VERSION,
   PATCH_MARKER,
   hasCurrentPatchFeatures,
 } from './patchRuntime.js'
+import {
+  buildBuiltinPatchThemePayload,
+  mergePatchThemePayloads,
+  type PatchThemePayload,
+} from './themePayload.js'
 
 const OFFICIAL_THEMES = [
   'dark',
@@ -42,7 +53,7 @@ const OFFICIAL_THEMES = [
 
 type OfficialTheme = (typeof OFFICIAL_THEMES)[number]
 
-type SupportedTheme = OfficialTheme | (typeof PIXEL_THEME_NAMES)[number]
+type SupportedTheme = string
 
 type ClaudeConfig = {
   theme?: string | null
@@ -56,6 +67,9 @@ type PatchMetadata = {
   installedAt: string
   claudeVersion: string | null
   sha256: string
+  themeNames?: string[]
+  customThemeCount?: number
+  themePayloadSha256?: string
 }
 
 type CliOptions = {
@@ -71,7 +85,9 @@ Usage:
   claude-theme-patch list
   claude-theme-patch status
   claude-theme-patch install [theme]
+  claude-theme-patch sync
   claude-theme-patch set <theme>
+  claude-theme-patch import-theme <json-file>
   claude-theme-patch remove
   claude-theme-patch paths
 
@@ -81,7 +97,8 @@ Options:
 
 Notes:
   - install backs up the original Claude Code cli.js before patching
-  - set writes ~/.claude.json and accepts official plus Hippocode Pixel themes
+  - import-theme persists custom theme seeds into ~/.claude/hippocode-custom-themes.json
+  - set writes ~/.claude.json and accepts official, bundled, and imported themes
   - remove restores the backup recorded in ~/.claude/hippocode-theme-patch.json`)
 }
 
@@ -130,6 +147,10 @@ function getClaudeBackupDir(): string {
 
 function getPatchMetadataPath(): string {
   return join(homedir(), '.claude', 'hippocode-theme-patch.json')
+}
+
+function getCustomThemePackPath(): string {
+  return join(homedir(), '.claude', 'hippocode-custom-themes.json')
 }
 
 function ensureParentDir(path: string): void {
@@ -190,6 +211,61 @@ function deletePatchMetadata(): void {
   if (existsSync(path)) {
     unlinkSync(path)
   }
+}
+
+function readRequiredJsonFile(path: string): Record<string, unknown> {
+  const parsed = readJsonFile<Record<string, unknown>>(path)
+  if (!parsed) {
+    throw new Error(`JSON file not found: ${path}`)
+  }
+
+  return parsed
+}
+
+function isOfficialTheme(theme: string): theme is OfficialTheme {
+  return OFFICIAL_THEMES.includes(theme as OfficialTheme)
+}
+
+function getReservedThemeNames(): string[] {
+  return [...OFFICIAL_THEMES, ...PIXEL_THEME_NAMES]
+}
+
+function readCustomThemePack(): StoredCustomThemePack {
+  const storedPack = readJsonFile<Record<string, unknown>>(getCustomThemePackPath())
+  if (!storedPack) {
+    return createEmptyCustomThemePack()
+  }
+
+  return normalizeCustomThemePack(storedPack, getReservedThemeNames())
+}
+
+function writeCustomThemePack(themePack: StoredCustomThemePack): void {
+  const path = getCustomThemePackPath()
+  ensureParentDir(path)
+  writeFileSync(path, `${JSON.stringify(themePack, null, 2)}\n`, 'utf8')
+}
+
+function buildManagedThemePayload(): PatchThemePayload {
+  return mergePatchThemePayloads(
+    buildBuiltinPatchThemePayload(),
+    buildCustomThemePayload(readCustomThemePack()),
+  )
+}
+
+function getSupportedThemes(): string[] {
+  return [...OFFICIAL_THEMES, ...buildManagedThemePayload().themeNames]
+}
+
+function haveSameThemeNames(
+  left: readonly string[] | undefined,
+  right: readonly string[],
+): boolean {
+  if (!left || left.length !== right.length) {
+    return false
+  }
+
+  const leftSet = new Set(left)
+  return right.every(theme => leftSet.has(theme))
 }
 
 function getClaudeBinaryPath(): string | null {
@@ -283,12 +359,13 @@ function patchClaudeSource(
   installedAt: string,
   versionOutput: string | null,
   force: boolean,
+  themePayload: PatchThemePayload,
 ): string {
   const adapter = resolveClaudeCodeAdapter(
     parseClaudeVersion(versionOutput),
     force,
   )
-  return applyClaudeCodePatch(source, adapter, { installedAt })
+  return applyClaudeCodePatch(source, adapter, { installedAt, themePayload })
 }
 
 function backupTargetFile(targetPath: string): string {
@@ -329,12 +406,28 @@ function getCurrentTheme(): string {
   return readConfig().theme ?? 'unset'
 }
 
+function getThemePayloadSha256(themePayload: PatchThemePayload): string {
+  return sha256(JSON.stringify(themePayload))
+}
+
 function setClaudeTheme(theme: SupportedTheme, targetPath: string): void {
-  if (isPixelThemeName(theme)) {
+  if (!isOfficialTheme(theme)) {
     const source = readTargetSource(targetPath)
     if (!isPatchedSource(source)) {
       throw new Error(
         `Theme "${theme}" requires a patched Claude Code build. Run claude-theme-patch install ${theme} first.`,
+      )
+    }
+
+    const metadata = readPatchMetadata()
+    const embeddedThemes =
+      metadata?.targetPath === targetPath && Array.isArray(metadata.themeNames)
+        ? metadata.themeNames
+        : []
+
+    if (!embeddedThemes.includes(theme)) {
+      throw new Error(
+        `Theme "${theme}" is not embedded in the current patch. Run claude-theme-patch sync or claude-theme-patch install ${theme} first.`,
       )
     }
   }
@@ -353,9 +446,9 @@ function setClaudeTheme(theme: SupportedTheme, targetPath: string): void {
   console.log(`Claude Code theme set: ${previousTheme ?? 'unset'} -> ${theme}`)
 }
 
-function clearPixelThemeIfNeeded(): void {
+function clearManagedThemeIfNeeded(): void {
   const currentTheme = readConfig().theme ?? null
-  if (!currentTheme || !isPixelThemeName(currentTheme)) {
+  if (!currentTheme || isOfficialTheme(currentTheme)) {
     return
   }
 
@@ -368,11 +461,15 @@ function clearPixelThemeIfNeeded(): void {
     console.log(`Backed up existing config to ${backupPath}`)
   }
 
-  console.log(`Cleared Pixel theme from config: ${currentTheme} -> unset`)
+  console.log(`Cleared managed theme from config: ${currentTheme} -> unset`)
 }
 
 function assertSupportedTheme(theme: string): asserts theme is SupportedTheme {
-  const supportedThemes = new Set<string>([...OFFICIAL_THEMES, ...PIXEL_THEME_NAMES])
+  if (isOfficialTheme(theme)) {
+    return
+  }
+
+  const supportedThemes = new Set<string>(getSupportedThemes())
   if (!supportedThemes.has(theme)) {
     throw new Error(
       `Unsupported theme "${theme}". Run "claude-theme-patch list" to see supported themes.`,
@@ -381,6 +478,8 @@ function assertSupportedTheme(theme: string): asserts theme is SupportedTheme {
 }
 
 function commandList(): void {
+  const customThemePack = readCustomThemePack()
+
   console.log('Official Claude Code themes:')
   for (const theme of OFFICIAL_THEMES) {
     console.log(`- ${theme}`)
@@ -392,11 +491,24 @@ function commandList(): void {
     console.log(`- ${seed.name}`)
     console.log(`- light-${seed.name}`)
   }
+
+  console.log('')
+  console.log('Imported custom themes:')
+  if (customThemePack.themes.length === 0) {
+    console.log('- none')
+    return
+  }
+
+  for (const theme of customThemePack.themes) {
+    console.log(`- ${theme.name}`)
+    console.log(`- light-${theme.name}`)
+  }
 }
 
 function commandStatus(targetPath: string): void {
   const source = readTargetSource(targetPath)
   const metadata = readPatchMetadata()
+  const customThemePack = readCustomThemePack()
   const version = getClaudeVersionForTarget(targetPath)
   const parsedVersion = parseClaudeVersion(version)
 
@@ -404,6 +516,8 @@ function commandStatus(targetPath: string): void {
   console.log(`target: ${targetPath}`)
   console.log(`patch: ${isPatchedSource(source) ? 'installed' : 'not installed'}`)
   console.log(`theme: ${getCurrentTheme()}`)
+  console.log(`customPack: ${getCustomThemePackPath()}`)
+  console.log(`customThemes: ${customThemePack.themes.length} imported`)
   console.log(
     `validated: ${
       isValidatedClaudeVersion(version)
@@ -417,6 +531,11 @@ function commandStatus(targetPath: string): void {
     console.log(`backup: ${metadata.backupPath}`)
     console.log(`installedAt: ${metadata.installedAt}`)
     console.log(`patchedSha256: ${metadata.sha256}`)
+    if (Array.isArray(metadata.themeNames)) {
+      console.log(
+        `embeddedThemes: ${metadata.themeNames.length} managed (${metadata.customThemeCount ?? 0} custom)`,
+      )
+    }
   } else {
     console.log(`metadata: ${getPatchMetadataPath()} (missing)`)
   }
@@ -427,6 +546,7 @@ function commandPaths(targetPath: string): void {
   console.log(`config: ${getClaudeConfigPath()}`)
   console.log(`backups: ${getClaudeBackupDir()}`)
   console.log(`metadata: ${getPatchMetadataPath()}`)
+  console.log(`customPack: ${getCustomThemePackPath()}`)
 }
 
 function commandInstall(
@@ -434,67 +554,79 @@ function commandInstall(
   theme?: SupportedTheme,
   force = false,
 ): void {
+  const themePayload = buildManagedThemePayload()
+  const themePayloadSha256 = getThemePayloadSha256(themePayload)
   let source = readTargetSource(targetPath)
+  let backupPath: string | null = null
 
   if (isPatchedSource(source)) {
-    if (!hasCurrentPatchFeatures(source)) {
-      const metadata = readPatchMetadata()
-      if (
-        !metadata ||
-        metadata.targetPath !== targetPath ||
-        !existsSync(metadata.backupPath)
-      ) {
-        throw new Error(
-          'Claude Code appears patched with an older Hippocode build, but no valid backup metadata was found for upgrade.',
-        )
-      }
+    const metadata = readPatchMetadata()
+    if (
+      !metadata ||
+      metadata.targetPath !== targetPath ||
+      !existsSync(metadata.backupPath)
+    ) {
+      throw new Error(
+        'Claude Code appears patched, but no valid backup metadata was found for refresh.',
+      )
+    }
 
-      copyFileSync(metadata.backupPath, targetPath)
+    const needsRefresh =
+      !hasCurrentPatchFeatures(source) ||
+      metadata.version !== PATCHER_VERSION ||
+      !haveSameThemeNames(metadata.themeNames, themePayload.themeNames) ||
+      metadata.customThemeCount !== themePayload.customThemeCount ||
+      metadata.themePayloadSha256 !== themePayloadSha256
+
+    if (!needsRefresh) {
+      console.log(`Patch already installed at ${targetPath}`)
+    } else {
+      backupPath = metadata.backupPath
+      copyFileSync(backupPath, targetPath)
       verifyUnpatchedTarget(targetPath)
       source = readTargetSource(targetPath)
-      console.log(`Restored previous backup from ${metadata.backupPath}`)
-    } else {
-      const metadata = readPatchMetadata()
-      if (!metadata) {
-        throw new Error(
-          'Claude Code already appears patched, but patch metadata is missing. Restore the official install before patching again.',
-        )
-      }
-
-      console.log(`Patch already installed at ${targetPath}`)
+      console.log(`Restored previous backup from ${backupPath}`)
     }
   }
 
   if (!isPatchedSource(source)) {
     const claudeVersion = assertValidatedClaudeVersion(targetPath, force)
-    const backupPath = backupTargetFile(targetPath)
+    const patchBackupPath = backupPath ?? backupTargetFile(targetPath)
     const installedAt = new Date().toISOString()
     const patchedSource = patchClaudeSource(
       source,
       installedAt,
       claudeVersion,
       force,
+      themePayload,
     )
 
     try {
       writeFileSync(targetPath, patchedSource, 'utf8')
       verifyPatchedTarget(targetPath)
     } catch (error) {
-      copyFileSync(backupPath, targetPath)
+      copyFileSync(patchBackupPath, targetPath)
       throw error
     }
 
     writePatchMetadata({
       version: PATCHER_VERSION,
       targetPath,
-      backupPath,
+      backupPath: patchBackupPath,
       installedAt,
       claudeVersion,
       sha256: sha256(patchedSource),
+      themeNames: themePayload.themeNames,
+      customThemeCount: themePayload.customThemeCount,
+      themePayloadSha256,
     })
 
-    console.log(`Backed up original Claude Code to ${backupPath}`)
-    console.log(`Installed Hippocode Pixel theme patch into ${targetPath}`)
+    if (!backupPath) {
+      console.log(`Backed up original Claude Code to ${patchBackupPath}`)
+      console.log(`Installed Hippocode theme patch into ${targetPath}`)
+    } else {
+      console.log(`Refreshed Hippocode theme patch into ${targetPath}`)
+    }
   }
 
   if (theme) {
@@ -502,8 +634,57 @@ function commandInstall(
   }
 }
 
+function commandSync(targetPath: string, force = false): void {
+  commandInstall(targetPath, undefined, force)
+}
+
 function commandSet(targetPath: string, theme: SupportedTheme): void {
   setClaudeTheme(theme, targetPath)
+}
+
+function commandImportTheme(
+  jsonPath: string,
+  targetPathOverride?: string,
+  force = false,
+): void {
+  const resolvedPath = resolve(jsonPath)
+  const importedThemePack = normalizeCustomThemePack(
+    readRequiredJsonFile(resolvedPath),
+    getReservedThemeNames(),
+  )
+  const mergedThemePack = mergeCustomThemePacks(
+    readCustomThemePack(),
+    importedThemePack,
+  )
+
+  writeCustomThemePack(mergedThemePack)
+
+  console.log(
+    `Imported ${importedThemePack.themes.length} custom theme seed(s) into ${getCustomThemePackPath()}`,
+  )
+
+  if (importedThemePack.themes.length > 0) {
+    console.log(
+      `Themes: ${importedThemePack.themes
+        .map(theme => `${theme.name}, light-${theme.name}`)
+        .join(', ')}`,
+    )
+  }
+
+  const metadata = readPatchMetadata()
+  const syncTarget =
+    targetPathOverride ??
+    (metadata && existsSync(metadata.targetPath) ? metadata.targetPath : undefined)
+
+  if (!syncTarget) {
+    console.log(
+      'Custom themes were saved. Run claude-theme-patch install <theme> or claude-theme-patch sync to embed them into Claude Code.',
+    )
+    return
+  }
+
+  commandSync(resolveClaudeTargetPath(syncTarget), force)
+  console.log('Embedded imported custom themes into the current Claude Code patch.')
 }
 
 function commandRemove(targetPath: string): void {
@@ -526,7 +707,7 @@ function commandRemove(targetPath: string): void {
 
   copyFileSync(metadata.backupPath, targetPath)
   verifyUnpatchedTarget(targetPath)
-  clearPixelThemeIfNeeded()
+  clearManagedThemeIfNeeded()
   deletePatchMetadata()
 
   console.log(`Restored official Claude Code from ${metadata.backupPath}`)
@@ -557,12 +738,23 @@ function main(rawArgv: string[]): void {
       commandInstall(resolveClaudeTargetPath(targetOverride), installTheme, force)
       return
     }
+    case 'sync':
+      commandSync(resolveClaudeTargetPath(targetOverride), force)
+      return
     case 'set':
       if (!value) {
         throw new Error('Missing theme name. Usage: claude-theme-patch set <theme>')
       }
       assertSupportedTheme(value)
       commandSet(resolveClaudeTargetPath(targetOverride), value)
+      return
+    case 'import-theme':
+      if (!value) {
+        throw new Error(
+          'Missing JSON file path. Usage: claude-theme-patch import-theme <json-file>',
+        )
+      }
+      commandImportTheme(value, targetOverride, force)
       return
     case 'remove':
       commandRemove(resolveClaudeTargetPath(targetOverride))

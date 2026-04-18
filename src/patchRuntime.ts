@@ -1,12 +1,11 @@
 import {
-  PIXEL_THEME_NAMES,
-  buildPixelSpritePayload,
-  buildPixelStartupPosePayload,
-  buildPixelThemePayload,
-  buildThemePickerOptions,
-} from './themeFactory.js'
+  buildBuiltinPatchThemePayload,
+  type PatchThemePayload,
+} from './themePayload.js'
 
-export const PATCHER_VERSION = '0.1.19'
+const BUILTIN_PATCH_THEME_PAYLOAD = buildBuiltinPatchThemePayload()
+
+export const PATCHER_VERSION = '0.2.0'
 export const PATCH_MARKER = '__HIPPOCODE_THEME_PATCH__'
 export const PATCH_THEME_GLOBAL = '__hippocodePixelThemes'
 export const PATCH_THEME_PICKER_OPTIONS_GLOBAL = '__hippocodeThemePickerOptions'
@@ -31,8 +30,13 @@ export function hasCurrentPatchFeatures(source: string): boolean {
   )
 }
 
-export function buildSupportedThemeList(existingThemes: string[]): string[] {
-  return [...new Set([...existingThemes, ...PIXEL_THEME_NAMES])]
+export function buildSupportedThemeList(
+  existingThemes: string[],
+  managedThemeNames = BUILTIN_PATCH_THEME_PAYLOAD.themeNames,
+): string[] {
+  return [
+    ...new Set([...existingThemes, ...managedThemeNames]),
+  ]
 }
 
 function buildPixelMascotRendererSource(): string {
@@ -44,23 +48,28 @@ function buildDiffThemePaletteSource(): string {
 }
 
 function buildSyntaxThemeNameSource(): string {
-  return `function(__hippocodeThemeName){var __hippocodeOptions=globalThis.${PATCH_THEME_PICKER_OPTIONS_GLOBAL};if(Array.isArray(__hippocodeOptions)){for(var __hippocodeIndex=0;__hippocodeIndex<__hippocodeOptions.length;__hippocodeIndex+=1){var __hippocodeOption=__hippocodeOptions[__hippocodeIndex];if(__hippocodeOption&&__hippocodeOption.value===__hippocodeThemeName&&typeof __hippocodeOption.label==="string")return __hippocodeOption.label.replace(/\\s+pixel theme$/i,"")}}return null}`
+  return `function(__hippocodeThemeName){var __hippocodeOptions=globalThis.${PATCH_THEME_PICKER_OPTIONS_GLOBAL};if(Array.isArray(__hippocodeOptions)){for(var __hippocodeIndex=0;__hippocodeIndex<__hippocodeOptions.length;__hippocodeIndex+=1){var __hippocodeOption=__hippocodeOptions[__hippocodeIndex];if(__hippocodeOption&&__hippocodeOption.value===__hippocodeThemeName&&typeof __hippocodeOption.label==="string")return __hippocodeOption.label.replace(/\\s+(?:pixel|custom) theme$/i,"")}}return null}`
 }
 
-export function buildPatchAssignments(installedAt: string): string {
+export function buildPatchAssignments(
+  installedAt: string,
+  themePayload: PatchThemePayload = BUILTIN_PATCH_THEME_PAYLOAD,
+): string {
   const patchInfo = {
     patcher: 'claude-code-theme-patcher',
     version: PATCHER_VERSION,
     installedAt,
-    pixelThemeCount: PIXEL_THEME_NAMES.length,
+    themeCount: themePayload.themeNames.length,
+    pixelThemeCount: BUILTIN_PATCH_THEME_PAYLOAD.themeNames.length,
+    customThemeCount: themePayload.customThemeCount,
   }
 
   return [
     `globalThis.${PATCH_MARKER}=${JSON.stringify(patchInfo)}`,
-    `globalThis.${PATCH_THEME_GLOBAL}=${JSON.stringify(buildPixelThemePayload())}`,
-    `globalThis.${PATCH_THEME_PICKER_OPTIONS_GLOBAL}=${JSON.stringify(buildThemePickerOptions())}`,
-    `globalThis.${PATCH_PIXEL_SPRITES_GLOBAL}=${JSON.stringify(buildPixelSpritePayload())}`,
-    `globalThis.${PATCH_PIXEL_POSES_GLOBAL}=${JSON.stringify(buildPixelStartupPosePayload())}`,
+    `globalThis.${PATCH_THEME_GLOBAL}=${JSON.stringify(themePayload.themes)}`,
+    `globalThis.${PATCH_THEME_PICKER_OPTIONS_GLOBAL}=${JSON.stringify(themePayload.pickerOptions)}`,
+    `globalThis.${PATCH_PIXEL_SPRITES_GLOBAL}=${JSON.stringify(themePayload.sprites)}`,
+    `globalThis.${PATCH_PIXEL_POSES_GLOBAL}=${JSON.stringify(themePayload.poses)}`,
     `globalThis.${PATCH_MASCOT_RENDERER_GLOBAL}=${buildPixelMascotRendererSource()}`,
     `globalThis.${PATCH_DIFF_THEME_PALETTE_GLOBAL}=${buildDiffThemePaletteSource()}`,
     `globalThis.${PATCH_SYNTAX_THEME_NAME_GLOBAL}=${buildSyntaxThemeNameSource()}`,
