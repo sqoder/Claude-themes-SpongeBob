@@ -74,6 +74,7 @@ type PatchMetadata = {
 
 type CliOptions = {
   targetPath?: string
+  themePackPath?: string
   force: boolean
   args: string[]
 }
@@ -82,6 +83,7 @@ function printUsage(): void {
   console.log(`claude-theme-patch
 
 Usage:
+  claude-theme-patch init [theme]
   claude-theme-patch list
   claude-theme-patch status
   claude-theme-patch install [theme]
@@ -93,9 +95,11 @@ Usage:
 
 Options:
   --target <path>   Patch a specific Claude Code cli.js file
+  --theme-pack <path>   Import a custom theme pack during init
   --force           Patch an unvalidated Claude Code version anyway
 
 Notes:
+  - init patches Claude Code and sets a usable theme in one command
   - install backs up the original Claude Code cli.js before patching
   - import-theme persists custom theme seeds into ~/.claude/hippocode-custom-themes.json
   - set writes ~/.claude.json and accepts official, bundled, and imported themes
@@ -105,6 +109,7 @@ Notes:
 function parseCliOptions(argv: string[]): CliOptions {
   const args: string[] = []
   let targetPath: string | undefined
+  let themePackPath: string | undefined
   let force = false
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -126,6 +131,23 @@ function parseCliOptions(argv: string[]): CliOptions {
       continue
     }
 
+    if (value === '--theme-pack') {
+      themePackPath = argv[index + 1]
+      if (!themePackPath) {
+        throw new Error('Missing path after --theme-pack')
+      }
+      index += 1
+      continue
+    }
+
+    if (value.startsWith('--theme-pack=')) {
+      themePackPath = value.slice('--theme-pack='.length)
+      if (!themePackPath) {
+        throw new Error('Missing path after --theme-pack=')
+      }
+      continue
+    }
+
     if (value === '--force') {
       force = true
       continue
@@ -134,7 +156,7 @@ function parseCliOptions(argv: string[]): CliOptions {
     args.push(value)
   }
 
-  return { targetPath, force, args }
+  return { targetPath, themePackPath, force, args }
 }
 
 function getClaudeConfigPath(): string {
@@ -245,6 +267,30 @@ function writeCustomThemePack(themePack: StoredCustomThemePack): void {
   writeFileSync(path, `${JSON.stringify(themePack, null, 2)}\n`, 'utf8')
 }
 
+function importCustomThemePackFromFile(jsonPath: string): {
+  importedThemePack: StoredCustomThemePack
+  mergedThemePack: StoredCustomThemePack
+  resolvedPath: string
+} {
+  const resolvedPath = resolve(jsonPath)
+  const importedThemePack = normalizeCustomThemePack(
+    readRequiredJsonFile(resolvedPath),
+    getReservedThemeNames(),
+  )
+  const mergedThemePack = mergeCustomThemePacks(
+    readCustomThemePack(),
+    importedThemePack,
+  )
+
+  writeCustomThemePack(mergedThemePack)
+
+  return {
+    importedThemePack,
+    mergedThemePack,
+    resolvedPath,
+  }
+}
+
 function buildManagedThemePayload(): PatchThemePayload {
   return mergePatchThemePayloads(
     buildBuiltinPatchThemePayload(),
@@ -254,6 +300,10 @@ function buildManagedThemePayload(): PatchThemePayload {
 
 function getSupportedThemes(): string[] {
   return [...OFFICIAL_THEMES, ...buildManagedThemePayload().themeNames]
+}
+
+function getDefaultInitTheme(): SupportedTheme {
+  return 'spongebob'
 }
 
 function haveSameThemeNames(
@@ -642,25 +692,54 @@ function commandSet(targetPath: string, theme: SupportedTheme): void {
   setClaudeTheme(theme, targetPath)
 }
 
+function commandInit(
+  targetPath: string,
+  requestedTheme: string | undefined,
+  themePackPath: string | undefined,
+  force = false,
+): void {
+  let initTheme = requestedTheme
+
+  if (themePackPath) {
+    const { importedThemePack, resolvedPath } =
+      importCustomThemePackFromFile(themePackPath)
+
+    console.log(
+      `Imported ${importedThemePack.themes.length} custom theme seed(s) from ${resolvedPath} into ${getCustomThemePackPath()}`,
+    )
+
+    if (importedThemePack.themes.length > 0) {
+      console.log(
+        `Themes: ${importedThemePack.themes
+          .map(theme => `${theme.name}, light-${theme.name}`)
+          .join(', ')}`,
+      )
+    }
+
+    if (!initTheme && importedThemePack.themes.length > 0) {
+      initTheme = importedThemePack.themes[0]!.name
+    }
+  }
+
+  const nextTheme = initTheme ?? getDefaultInitTheme()
+  assertSupportedTheme(nextTheme)
+  commandInstall(targetPath, nextTheme, force)
+
+  console.log('')
+  console.log(`Ready: Claude Code is patched and using "${nextTheme}".`)
+  console.log('Switch later with: claude-theme-patch set <theme>')
+}
+
 function commandImportTheme(
   jsonPath: string,
   targetPathOverride?: string,
   force = false,
 ): void {
-  const resolvedPath = resolve(jsonPath)
-  const importedThemePack = normalizeCustomThemePack(
-    readRequiredJsonFile(resolvedPath),
-    getReservedThemeNames(),
-  )
-  const mergedThemePack = mergeCustomThemePacks(
-    readCustomThemePack(),
-    importedThemePack,
-  )
-
-  writeCustomThemePack(mergedThemePack)
+  const { importedThemePack, resolvedPath } =
+    importCustomThemePackFromFile(jsonPath)
 
   console.log(
-    `Imported ${importedThemePack.themes.length} custom theme seed(s) into ${getCustomThemePackPath()}`,
+    `Imported ${importedThemePack.themes.length} custom theme seed(s) from ${resolvedPath} into ${getCustomThemePackPath()}`,
   )
 
   if (importedThemePack.themes.length > 0) {
@@ -714,7 +793,8 @@ function commandRemove(targetPath: string): void {
 }
 
 function main(rawArgv: string[]): void {
-  const { targetPath: targetOverride, force, args } = parseCliOptions(rawArgv)
+  const { targetPath: targetOverride, themePackPath, force, args } =
+    parseCliOptions(rawArgv)
   const [command, value] = args
 
   if (command === '--help' || command === '-h' || command === undefined) {
@@ -723,6 +803,14 @@ function main(rawArgv: string[]): void {
   }
 
   switch (command) {
+    case 'init':
+      commandInit(
+        resolveClaudeTargetPath(targetOverride),
+        value,
+        themePackPath,
+        force,
+      )
+      return
     case 'list':
       commandList()
       return

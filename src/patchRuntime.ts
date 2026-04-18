@@ -5,7 +5,7 @@ import {
 
 const BUILTIN_PATCH_THEME_PAYLOAD = buildBuiltinPatchThemePayload()
 
-export const PATCHER_VERSION = '0.2.0'
+export const PATCHER_VERSION = '0.2.1'
 export const PATCH_MARKER = '__HIPPOCODE_THEME_PATCH__'
 export const PATCH_THEME_GLOBAL = '__hippocodePixelThemes'
 export const PATCH_THEME_PICKER_OPTIONS_GLOBAL = '__hippocodeThemePickerOptions'

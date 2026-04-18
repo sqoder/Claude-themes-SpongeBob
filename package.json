@@ -1,6 +1,6 @@
 {
   "name": "claude-code-theme-patcher",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Patch official Claude Code installs to inject bundled and custom Hippocode themes.",
   "type": "module",
   "bin": {

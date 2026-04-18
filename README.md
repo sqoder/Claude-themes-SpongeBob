@@ -11,12 +11,18 @@ This package is the second-stage installer:
 3. it injects bundled plus imported custom themes into the official theme registry
 4. it can restore the original install later
 
-## Install
+## Quick Start
 
-One command, no global install:
+Open-box path for bundled themes:
 
 ```bash
-npx claude-code-theme-patcher install spongebob
+npx claude-code-theme-patcher init
+```
+
+Open-box path for your own theme pack:
+
+```bash
+npx claude-code-theme-patcher init --theme-pack ./my-themes.json
 ```
 
 Reusable local command:
@@ -28,6 +34,7 @@ npm install -g claude-code-theme-patcher
 ## Usage
 
 ```bash
+claude-theme-patch init [theme]
 claude-theme-patch list
 claude-theme-patch status
 claude-theme-patch install spongebob
@@ -45,19 +52,31 @@ claude-theme-patch --force install spongebob
 
 ## Recommended user flow
 
-Patch official Claude Code and set an initial theme:
+Patch official Claude Code and set a usable bundled theme in one command:
 
 ```bash
-npx claude-code-theme-patcher install spongebob
+npx claude-code-theme-patcher init
 ```
 
-Switch later without reinstalling:
+Patch official Claude Code and immediately use the first theme from your custom pack:
+
+```bash
+npx claude-code-theme-patcher init --theme-pack ./my-themes.json
+```
+
+Pick a specific theme during init:
+
+```bash
+npx claude-code-theme-patcher init jellyfish-fields --theme-pack ./my-themes.json
+```
+
+Switch later without reinstalling or re-importing:
 
 ```bash
 npx claude-code-theme-patcher set bubble-bass
 ```
 
-Import your own theme pack, re-embed it into Claude Code, then switch to it:
+If you already initialized once, import an updated custom pack and refresh the patch:
 
 ```bash
 npx claude-code-theme-patcher import-theme ./my-themes.json
@@ -68,7 +87,7 @@ Or install once globally, then reuse the local command:
 
 ```bash
 npm install -g claude-code-theme-patcher
-claude-theme-patch install spongebob
+claude-theme-patch init
 claude-theme-patch set bubble-bass
 ```
 
@@ -112,6 +131,7 @@ Notes:
 - This release is validated against Claude Code `2.1.112`.
 - When Claude Code updates, you may need to rerun the patcher or publish a new patcher build.
 - Use `--target <path>` to patch a copied `cli.js` during testing instead of touching the real install.
+- `init` is the shortest supported user path; it patches Claude Code and sets a theme in one command.
 - `status` reports whether the detected Claude Code version is inside the validated set.
 - `install` blocks unvalidated Claude Code versions unless you pass `--force`.
 - `import-theme` persists custom theme seeds and refreshes the current patch automatically when metadata is available.

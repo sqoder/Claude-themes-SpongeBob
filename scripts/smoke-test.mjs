@@ -96,6 +96,7 @@ function writeCustomThemePack(path, accent, shimmer, promptBorder) {
 
 try {
   const validatedHomeDir = join(tempRoot, 'validated-home')
+  const initWithPackHomeDir = join(tempRoot, 'init-with-pack-home')
   const unsupportedHomeDir = join(tempRoot, 'unsupported-home')
   const customThemePackPath = join(tempRoot, 'jellyfish-pack.json')
   const validatedTarget = writeFixture(
@@ -108,6 +109,11 @@ try {
     'unsupported',
     '2.1.999 (Claude Code)',
   )
+  const initWithPackTarget = writeFixture(
+    initWithPackHomeDir,
+    'init-with-pack',
+    '2.1.112 (Claude Code)',
+  )
   const originalValidatedSource = readFileSync(validatedTarget, 'utf8')
 
   writeCustomThemePack(
@@ -118,15 +124,31 @@ try {
   )
 
   const installOutput = runCli(
-    ['--target', validatedTarget, 'install', 'spongebob'],
+    ['--target', validatedTarget, 'init'],
     validatedHomeDir,
   )
   assert.match(installOutput, /Installed Hippocode theme patch/)
   assert.match(installOutput, /Claude Code theme set: unset -> spongebob/)
+  assert.match(installOutput, /Ready: Claude Code is patched and using "spongebob"./)
   assert.equal(
     JSON.parse(readFileSync(join(validatedHomeDir, '.claude.json'), 'utf8')).theme,
     'spongebob',
   )
+
+  const initWithPackOutput = runCli(
+    ['--target', initWithPackTarget, '--theme-pack', customThemePackPath, 'init'],
+    initWithPackHomeDir,
+  )
+  assert.match(initWithPackOutput, /Imported 1 custom theme seed/)
+  assert.match(
+    initWithPackOutput,
+    /Ready: Claude Code is patched and using "jellyfish-fields"./,
+  )
+  assert.equal(
+    JSON.parse(readFileSync(join(initWithPackHomeDir, '.claude.json'), 'utf8')).theme,
+    'jellyfish-fields',
+  )
+  assert.match(readFileSync(initWithPackTarget, 'utf8'), /jellyfish-fields/)
 
   const statusOutput = runCli(
     ['--target', validatedTarget, 'status'],
