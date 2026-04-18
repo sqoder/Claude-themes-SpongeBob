@@ -144,6 +144,32 @@ Notes:
 npm run verify:release
 ```
 
+## Publishing
+
+This repository now includes a GitHub Actions publish workflow at `.github/workflows/publish.yml`.
+
+One-time npm setup:
+
+1. Create or claim the `claude-code-theme-patcher` package on npm.
+2. In npm package settings, add a trusted publisher for:
+   - GitHub user or org: `sqoder`
+   - Repository: `Claude-themes-SpongeBob`
+   - Workflow filename: `publish.yml`
+3. After the first successful publish, restrict package publishing to trusted publishing on npm.
+
+Release flow:
+
+1. Bump `package.json` to the version you want to ship.
+2. Push that commit to `main`.
+3. Create a GitHub Release with tag `v<package.json version>`.
+4. The publish workflow will run `npm run verify:release` and then `npm publish`.
+
+Notes:
+
+- The workflow uses npm trusted publishing through GitHub Actions OIDC.
+- `package.json` already points `repository.url` at `https://github.com/sqoder/Claude-themes-SpongeBob.git`, which npm requires to match the publishing repository for trusted publishing.
+- npm package name lookup returned `404 Not Found` on `2026-04-18`, so `claude-code-theme-patcher` did not appear to be published at that time.
+
 ## Development
 
 ```bash
