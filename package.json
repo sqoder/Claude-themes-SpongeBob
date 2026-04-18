@@ -1,0 +1,47 @@
+{
+  "name": "claude-code-theme-patcher",
+  "version": "0.1.19",
+  "description": "Patch official Claude Code installs to inject Hippocode Pixel themes.",
+  "type": "module",
+  "bin": {
+    "claude-theme-patch": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "smoke": "npm run build && node ./scripts/smoke-test.mjs",
+    "verify:release": "npm run smoke && npm pack --dry-run",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "claude-code",
+    "theme",
+    "patcher",
+    "hippocode",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sqoder/Claude-themes-SpongeBob.git"
+  },
+  "homepage": "https://github.com/sqoder/Claude-themes-SpongeBob#readme",
+  "bugs": {
+    "url": "https://github.com/sqoder/Claude-themes-SpongeBob/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "ISC"
+}
